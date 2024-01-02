@@ -1,35 +1,50 @@
-﻿using OpenQA.Selenium;
+using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Support.UI;
-using System.Diagnostics;
-using System.Data.OleDb;
 using System.Data;
-using System.Configuration;
+using System.Diagnostics;
+using Microsoft.Extensions.Configuration;
+using ExcelDataReader;
 
 public class Program
 {
     public static IWebDriver driver { set; get; }
-    public static string title { get; set; }
+    public static DataTable dtblogger { get; set; }
     public static string profile { get; set; }
-    public static DataTable dtBlogger { get; set; }
+    public static string title { get; set; }
+    public static IConfigurationRoot ConfigurationFile { get; set; }
+
+    #region Main
+    /// <summary>
+    /// Main Function
+    /// </summary>
     public static void Main()
     {
         try
         {
             #region WorkbookLoad and Initialize Variable
             Program program = new Program();
-            program.ReadFile();
-            var titlePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bloggertitle.txt");
-            title = File.ReadAllText(titlePath);
+            ConfigurationFile = new ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+                .Build();
+            dtblogger = program.ReadBloggerkFile("autoblogger", dtblogger);
+            dtblogger.Rows[0].Delete();
+            dtblogger.AcceptChanges();
+            title = ConfigurationFile.GetValue<string>("AppSettings:title");
+            #endregion
+
+            #region Add Urls of blogger
             Console.WriteLine("Please Enter Column to skip :- ");
             string colString = ConsoleReadline.ReadLine(10000);
-            int colCount = Convert.ToInt32(colString) <=0 ? 0 : Convert.ToInt32(colString);
+            int colCount = Convert.ToInt32(colString);
             string rowString = "";
             int rowCount = 0;
             Console.WriteLine("Please hit enter after copy content and close all the browser:- ");
             ConsoleReadline.ReadLine(5000);
             List<string> bloggerUrls;
             #endregion
+
             while (true)
             {
                 try
@@ -38,12 +53,12 @@ public class Program
                     Console.WriteLine("Please Enter Rows to skip :- ");
 
                     rowString = ConsoleReadline.ReadLine(10000);
-                    rowCount = Convert.ToInt32(rowString) <= 0 ? 0 : Convert.ToInt32(rowString);
+                    rowCount = Convert.ToInt32(rowString);
 
-                    bloggerUrls = dtBlogger.AsEnumerable().Select(x => x.Field<string>(colCount.ToString())).ToList<string>();
+                    bloggerUrls = dtblogger.AsEnumerable().Select(x => x.Field<string>(colCount.ToString())).ToList<string>();
                     if (string.IsNullOrWhiteSpace(bloggerUrls[0]))
                         break;
-                    bloggerUrls.RemoveAll(s => s == "");
+                    bloggerUrls.RemoveAll(s => string.IsNullOrWhiteSpace(s));
                     profile = bloggerUrls[0];
                     bloggerUrls.RemoveRange(0, rowCount + 1);
                     #endregion
@@ -56,6 +71,7 @@ public class Program
                     int retryCount = 0;
                     #endregion
 
+                    #region Process Each Row
                     foreach (var url in bloggerUrls)
                     {
                         if (string.IsNullOrWhiteSpace(url)) continue;
@@ -124,7 +140,7 @@ public class Program
                                                     newPostButton.Click();
                                                     Thread.Sleep(5000);
                                                 }
-                                                    
+
                                             }
                                         }
                                     }
@@ -151,8 +167,9 @@ public class Program
 
                     colCount++;
                     bloggerUrls.Clear();
+                    #endregion
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
                     Console.WriteLine(ex.Message);
                     driver.Quit();
@@ -165,34 +182,52 @@ public class Program
             driver.Quit();
         }
     }
+    #endregion
+
+    #region Find Element
+    /// <summary>
+    /// Find Element
+    /// </summary>
+    /// <param name="by"></param>
+    /// <param name="timeout"></param>
+    /// <returns></returns>
     public IWebElement FindElement(By by, uint timeout)
     {
         try
         {
+            if (string.IsNullOrWhiteSpace(by.Criteria))
+                return null;
             var wait = new DefaultWait<IWebDriver>(driver);
             wait.Timeout = TimeSpan.FromSeconds(timeout);
             wait.IgnoreExceptionTypes(typeof(NoSuchElementException));
             return wait.Until(ctx =>
             {
                 var elem = ctx.FindElement(by);
-                if (!elem.Displayed)
+                if (!elem.Displayed && !elem.Enabled)
                     return null;
 
                 return elem;
             });
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Console.WriteLine(ex.Message);
             return null;
         }
     }
+    #endregion
+
+    #region Create Browser Driver
+    /// <summary>
+    /// Create Browser Driver
+    /// </summary>
+    /// <returns></returns>
     public IWebDriver CreateBrowserDriver()
     {
         try
         {
-            string userdatadir = ConfigurationManager.AppSettings["userdatadir"];
-            string driverdir = ConfigurationManager.AppSettings["chromedir"];
+            var userdatadir = ConfigurationFile.GetValue<string>("AppSettings:userdatadir");
+            var driverdir = ConfigurationFile.GetValue<string>("AppSettings:chromedir");
 
             var options = new ChromeOptions();
             options.AddArgument("--test-type");
@@ -201,61 +236,55 @@ public class Program
             options.AddArgument("--disable-infobars");
             options.AddArgument("--start-maximized");
             options.AddArgument("--disable-dev-shm-usage");
+            options.AddExcludedArgument("enable-automation");
             options.AddArgument(@"user-data-dir=" + userdatadir);
             options.AddArgument(@"profile-directory=" + profile);
+            options.AcceptInsecureCertificates = true;
 
-            var directory = @driverdir;
-            return new ChromeDriver(directory, options);
+            return new ChromeDriver(driverdir, options, TimeSpan.FromSeconds(120));
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             throw;
         }
     }
-    public OleDbConnection InitializeOledbConnection()
-    {
-        var bloggerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bloggers.xlsx");
-        string connString = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" + bloggerPath + ";Extended Properties=\"Excel 12.0;HDR=Yes;IMEX=1\"";
-        return new OleDbConnection(connString);
-    }
-    public void ReadFile()
+    #endregion
+
+    #region Read Blogger File
+    /// <summary>
+    /// Read Backlink File
+    /// </summary>
+    public DataTable ReadBloggerkFile(string bloggerFile, DataTable dtBloggerTable)
     {
         try
         {
-            var oledbConn = InitializeOledbConnection();
-            DataTable schemaTable = new DataTable();
-            var OledbCmd = new OleDbCommand();
-            OledbCmd.Connection = oledbConn;
-            oledbConn.Open();
-            OledbCmd.CommandText = "Select * from [Sheet1$]";
-            OleDbDataReader dr = OledbCmd.ExecuteReader();
-            if (dr.HasRows)
-            {
-                dtBlogger = new DataTable();
-                dtBlogger.Columns.Add("0", typeof(string));
-                dtBlogger.Columns.Add("1", typeof(string));
-                dtBlogger.Columns.Add("2", typeof(string));
-                dtBlogger.Columns.Add("3", typeof(string));
-                dtBlogger.Columns.Add("4", typeof(string));
-                dtBlogger.Columns.Add("5", typeof(string));
-                dtBlogger.Columns.Add("6", typeof(string));
-                dtBlogger.Columns.Add("7", typeof(string));
-                dtBlogger.Columns.Add("8", typeof(string));
-                dtBlogger.Columns.Add("9", typeof(string));
-                dtBlogger.Columns.Add("10", typeof(string));
-                dtBlogger.Columns.Add("11", typeof(string));
-                dtBlogger.Columns.Add("12", typeof(string));
-                dtBlogger.Columns.Add("13", typeof(string));
-                dtBlogger.Columns.Add("14", typeof(string));
-                while (dr.Read())
-                {
-                    dtBlogger.Rows.Add(dr[0], dr[1], dr[2], dr[3], dr[4], dr[5], dr[6], dr[7], dr[8],
-                        dr[9], dr[10], dr[11], dr[12], dr[13], dr[14]);
-                }
-            }
-            dr.Close();
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+            var backlinkPath = ConfigurationFile.GetValue<string>("AppSettings:" + bloggerFile);
 
-            oledbConn.Close();
+            FileStream stream = File.Open(backlinkPath, FileMode.Open, FileAccess.Read);
+            IExcelDataReader excelReader = ExcelReaderFactory.CreateOpenXmlReader(stream);
+            excelReader.AsDataSet(new ExcelDataSetConfiguration()
+            {
+                ConfigureDataTable = (_) => new ExcelDataTableConfiguration()
+                {
+                    UseHeaderRow = true
+                }
+            });
+
+            DataSet result = excelReader.AsDataSet();
+
+            dtBloggerTable = result.Tables[0];
+            excelReader.Close();
+
+            int i = 0;
+            foreach (DataColumn column in dtBloggerTable.Columns)
+            {
+                column.ColumnName = i.ToString();
+                i++;
+            }
+
+            dtBloggerTable.AcceptChanges();
+            return dtBloggerTable;
         }
         catch (Exception ex)
         {
@@ -263,7 +292,13 @@ public class Program
 
         }
     }
+    #endregion
 }
+
+#region Console Readline Class
+/// <summary>
+/// Console Readline Class
+/// </summary>
 class ConsoleReadline
 {
     private static string inputLast;
@@ -313,3 +348,4 @@ class ConsoleReadline
         }
     }
 }
+#endregion
